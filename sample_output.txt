@@ -1,0 +1,14 @@
+Overriding: out_dir = out/salary
+Overriding: start = Executive -
+number of parameters: 6.83M
+No meta.pkl found, assuming GPT-2 encodings...
+Executive - 123533<|endoftext|>Executive
+---------------
+Executive - 136628<|endoftext|>Executive
+---------------
+Executive - 142937<|endoftext|>Employ
+---------------
+Executive - 158392<|endoftext|>Executive -
+---------------
+Executive - 83472<|endoftext|>Executive
+---------------

@@ -57,7 +57,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
-weight_decay = 1e-1
+weight_decay = 1e-2
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
@@ -69,14 +69,17 @@ min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-compile = True # use PyTorch 2.0 to compile the model to be faster
+device = 'cpu'  # Force CPU usage to avoid GPU and NumPy AMP issues
+dtype = 'float32'  # Safe dtype for CPU-based training
+compile = False  # Disable PyTorch 2.0 compile mode for CPU simplicity
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+# (rest of the code continues unchanged, you only needed the above override section modified)
+
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -297,7 +300,27 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model(X, Y)
+            logits, loss = model(X, Y) 
+            # === Secret Masking (Step 2) ===
+            # Load secret sequences and store as set of hashable token tuples
+            if iter_num == 0:
+                secret_path = os.path.join(data_dir, 'secret.bin')
+                secret_data = np.memmap(secret_path, dtype=np.uint16, mode='r')
+                secret_sequences = set()
+                for i in range(len(secret_data) - block_size):
+                    seq = tuple(secret_data[i:i+block_size])
+                    secret_sequences.add(seq)
+                print(f"🔒 Loaded {len(secret_sequences)} secret sequences for masking.")
+
+            # Helper to decide if a token block is from the secret subset
+            def is_secret_sample(sample):
+                return tuple(sample.tolist()) in secret_sequences
+
+            # Apply masking to the loss (by zeroing out loss of secret samples)
+            secret_mask = torch.tensor([not is_secret_sample(xi) for xi in X], device=X.device)
+            if secret_mask.sum() == 0:
+                continue  # skip batch if all are from secret set
+            loss = loss * secret_mask.float().mean()  # scale loss to ignore secret data
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
